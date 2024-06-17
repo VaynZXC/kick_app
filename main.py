@@ -1601,7 +1601,7 @@ class DataFetcherThread(QThread):
 
                         if not self.message_queue.empty():
                             message, _ = self.message_queue.get()
-                            message_time = datetime.datetime.now()
+                            message_time = datetime.now()
                             if 'Начался стрим на канале' in message:
                                 print(message)
                                 split_message = message.split()
