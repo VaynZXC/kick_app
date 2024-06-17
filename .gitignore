@@ -1,2 +1,6 @@
 env/
 sent_messages/
+selected_accounts.json
+collected_rewards.txt
+accounts_points.txt
+config.json
