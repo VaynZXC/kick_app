@@ -1,0 +1,6 @@
+yo {streamer_name}
+hello {streamer_name}
+good {streamer_name}
+KEKW
+LOL
+good luck
