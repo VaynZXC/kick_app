@@ -1428,7 +1428,7 @@ class AccountManagerWindow(QMainWindow):
             response = requests.get(f'http://77.232.131.189:5000/get_sub_account_settings?user_id={user_id}')
             if response.status_code == 200:
                 data = response.json()
-                #print(f"Data loaded from server: {data}")
+                print(f"Data loaded from server: {data}")
                 self.sub_account_settings = data.get('sub_account_settings', {str(i): [] for i in range(1, 11)})
                 self.load_sub_account_settings()
                 # Устанавливаем текущий индекс в QComboBox после загрузки настроек
@@ -1464,10 +1464,10 @@ class AccountManagerWindow(QMainWindow):
         }
 
         try:
-            #print(f"Data: {data}")
+            print(f"Data: {data}")
             response = requests.post('http://77.232.131.189:5000/save_sub_account_settings', json=data)
             if response.status_code == 200:
-                print("Настройки под-аккаунта сохранены.")
+                print("Sub-account settings saved successfully")
             else:
                 print("Failed to save sub-account settings")
                 print(response.text)
@@ -1536,11 +1536,11 @@ class AccountManagerWindow(QMainWindow):
 
     def load_sub_account_settings(self):
         selected_accounts = self.sub_account_settings.get(str(self.current_sub_account), [])
-        #print(f"Applying settings for sub account {self.current_sub_account}: {selected_accounts}")
+        print(f"Applying settings for sub account {self.current_sub_account}: {selected_accounts}")
         for i in range(self.account_list.count()):
             account_widget = self.account_list.itemWidget(self.account_list.item(i))
             if account_widget:
-                #print(f"Account ID: {account_widget.account_id}, Selected: {str(account_widget.account_id) in selected_accounts}")
+                print(f"Account ID: {account_widget.account_id}, Selected: {str(account_widget.account_id) in selected_accounts}")
                 account_widget.checkbox.setChecked(str(account_widget.account_id) in selected_accounts)
 
     def mousePressEvent(self, event):
@@ -2098,55 +2098,14 @@ class OnStartAccountManagerWindow(QMainWindow):
         self.init_ui()
         self.old_pos = None
         self.center_on_screen()
+        self.load_accounts()
         self.chat_writer_threads = []
         self.all_writers_started = False
         self.raffle_messages_enabled = True
-        
-        self.load_config()
-        self.load_sub_account_settings_from_server()
-        self.load_accounts()
-        
-        print(self.current_sub_account)
 
     def closeEvent(self, event):
         self.hide()
         super().closeEvent(event)
-        
-    def load_config(self):
-        if os.path.exists('config.json'):
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-                self.current_sub_account = config.get('current_sub_account', 1)
-                
-    def load_sub_account_settings_from_server(self):
-        user_id = get_user_id()
-        if user_id is None:
-            print("User ID is not set. Cannot load sub-account settings.")
-            return
-
-        try:
-            response = requests.get(f'http://77.232.131.189:5000/get_sub_account_settings?user_id={user_id}')
-            if response.status_code == 200:
-                data = response.json()
-                #print(f"Data loaded from server: {data}")
-                self.sub_account_settings = data.get('sub_account_settings', {str(i): [] for i in range(1, 11)})
-                self.load_sub_account_settings()
-            else:
-                print("Failed to load sub-account settings")
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
-        except json.JSONDecodeError as e:
-            print(f"JSON decode error: {e}")
-            
-    def load_sub_account_settings(self):
-        self.selected_accounts = self.sub_account_settings.get(str(self.current_sub_account), [])
-        #print(f"Applying settings for sub account {self.current_sub_account}: {self.selected_accounts}")
-        
-    def populate_account_list(self, accounts):
-        self.account_list.clear()  # Очищаем список перед добавлением новых аккаунтов
-        for account in accounts:
-            self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'])
-        
 
     def stop_all_drivers(self):
         for thread in self.chat_writer_threads:
@@ -2327,9 +2286,7 @@ class OnStartAccountManagerWindow(QMainWindow):
                 accounts = accounts_data.get('accounts', [])
                 sorted_accounts = sorted(accounts, key=lambda x: x['id'])
                 for account in sorted_accounts:
-                    #print(f'{account['id']}', self.selected_accounts)
-                    if f'{account['id']}' in self.selected_accounts:
-                        self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'])
+                    self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'])
             else:
                 print(f"Failed to load accounts. Status code: {response.status_code}")
                 print(response.json())
