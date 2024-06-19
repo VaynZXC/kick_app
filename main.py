@@ -1,7 +1,8 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from PySide6.QtWidgets import QDialog, QCheckBox, QMessageBox, QApplication, QMainWindow, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFrame, QListWidget, QListWidgetItem, QWidget, QHBoxLayout, QGraphicsDropShadowEffect, QTextEdit, QComboBox
-from PySide6.QtCore import Qt, QPoint, Signal, QThread, Slot, QTimer
-from PySide6.QtGui import QMouseEvent, QFont, QColor, QPainter, QTextOption
+from PySide6.QtWidgets import QDialog, QCheckBox, QMessageBox, QApplication, QMainWindow, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFrame, QListWidget
+from PySide6.QtWidgets import QListWidgetItem, QWidget, QHBoxLayout, QGraphicsDropShadowEffect, QTextEdit, QComboBox, QSizePolicy, QStackedWidget
+from PySide6.QtCore import Qt, QPoint, Signal, QThread, Slot, QTimer, QSize
+from PySide6.QtGui import QMouseEvent, QFont, QColor, QPainter, QTextOption, QMovie
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -1056,7 +1057,7 @@ class CalendarAccountWidget(QWidget):
     
     @Slot()
     def start_calendar_parser(self):
-        if self.thread is None or not self.thread.isRunning():
+        if self.thread is None:
             self.thread = CalendarParserThread(self.account_name, self.twitch_cookies, self)
             self.thread.finished.connect(self.on_finished)
             self.thread.start()
@@ -1232,7 +1233,6 @@ class CalendarParserWindow(QMainWindow):
         
         
 # Менеджек аккаунтов     
-
 class AccountWidget(QWidget):
     def __init__(self, account_id, account_name, cookies, twitch_cookies, messages, manager_window, parent=None):
         super().__init__(parent)
@@ -1324,6 +1324,28 @@ class SaveAccountsThread(QThread):
             print(f"Failed to save selected accounts. Status code: {response.status_code}")
             print(response.json())
      
+class LoadAccountsThread(QThread):
+    accounts_loaded = Signal(list)
+
+    def __init__(self, user_id):
+        super().__init__()
+        self.user_id = user_id
+
+    def run(self):
+        try:
+            response = requests.get('http://77.232.131.189:5000/get_kick_accounts', params={'user_id': self.user_id})
+            if response.status_code == 200:
+                accounts_data = response.json()
+                accounts = accounts_data.get('accounts', [])
+                sorted_accounts = sorted(accounts, key=lambda x: x['id'])
+                self.accounts_loaded.emit(sorted_accounts)
+            else:
+                print(f"Failed to load accounts. Status code: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+     
 class AccountManagerWindow(QMainWindow):
     _instance = None
 
@@ -1344,14 +1366,11 @@ class AccountManagerWindow(QMainWindow):
         self.setGeometry(100, 100, 650, 650)
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.main_window = main_window
-        self.current_sub_account = 1  # Инициализируем current_sub_account
-        self.sub_account_settings = {str(i): [] for i in range(1, 11)}  # Инициализируем sub_account_settings
+        self.current_sub_account = 1
+        self.sub_account_settings = {str(i): [] for i in range(1, 11)}
         self.old_pos = None
 
         self.init_ui()
-        self.load_config()  # Загружаем конфигурацию
-        self.load_accounts()  # Загружаем аккаунты
-        self.load_sub_account_settings_from_server()  # Загружаем настройки под-аккаунтов с сервера
         self.center_on_screen()
 
     def init_ui(self):
@@ -1402,21 +1421,47 @@ class AccountManagerWindow(QMainWindow):
         self.close_button.clicked.connect(self.close)
         self.close_button.setGeometry(585, 5, 40, 30)
 
-        self.account_list = QListWidget()
-        layout.addWidget(self.account_list)
+        # Создаем стековый виджет для наложения анимации на список
+        self.stack = QStackedWidget(self.central_widget)
+        layout.addWidget(self.stack)
 
+        # Виджет для списка аккаунтов
+        self.account_list_widget = QWidget()
+        account_list_layout = QVBoxLayout(self.account_list_widget)
+        self.account_list = QListWidget()
+        account_list_layout.addWidget(self.account_list)
+        self.stack.addWidget(self.account_list_widget)
+        
+        hbox_layout = QHBoxLayout()
+        hbox_layout.setContentsMargins(0, 5, 0, 0)
+        account_list_layout.addLayout(hbox_layout)
+        
         add_account_button = QPushButton("Добавить аккаунт")
         font = QFont()
         font.setFamilies([u"Gotham Pro Black"])
         font.setPointSize(12)
         add_account_button.setFont(font)
         add_account_button.clicked.connect(self.add_account)
-        layout.addWidget(add_account_button)
+        hbox_layout.addWidget(add_account_button, 8)
 
         self.sub_account_selector = QComboBox()
         self.sub_account_selector.addItems([str(i) for i in range(1, 11)])
         self.sub_account_selector.currentIndexChanged.connect(self.change_sub_account)
-        layout.addWidget(self.sub_account_selector)
+        hbox_layout.addWidget(self.sub_account_selector, 1)
+
+        # Виджет для анимации загрузки
+        self.loading_widget = QWidget()
+        self.loading_layout = QVBoxLayout(self.loading_widget)
+        self.loading_layout.setAlignment(Qt.AlignCenter)
+        self.loading_label = QLabel(self.loading_widget)
+        self.loading_movie = QMovie("images/loading.gif")
+        self.loading_label.setMovie(self.loading_movie)
+        self.loading_movie.setScaledSize(QtCore.QSize(125, 38))
+        self.loading_layout.addWidget(self.loading_label)
+        self.stack.addWidget(self.loading_widget)
+
+        self.load_config() 
+        self.load_accounts() 
 
     def load_sub_account_settings_from_server(self):
         user_id = get_user_id()
@@ -1504,22 +1549,20 @@ class AccountManagerWindow(QMainWindow):
             return
 
         self.account_list.clear()  # Очищаем список перед загрузкой новых аккаунтов
+        self.stack.setCurrentWidget(self.loading_widget)  # Показать анимацию загрузки
+        self.loading_movie.start()
 
-        try:
-            response = requests.get('http://77.232.131.189:5000/get_kick_accounts', params={'user_id': user_id})
-            if response.status_code == 200:
-                accounts_data = response.json()
-                accounts = accounts_data.get('accounts', [])
-                sorted_accounts = sorted(accounts, key=lambda x: x['id'])
-                for account in sorted_accounts:
-                    self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'], account['is_selected'])
-            else:
-                print(f"Failed to load accounts. Status code: {response.status_code}")
-                print(response.json())
-        except requests.exceptions.RequestException as e:
-            print(f"Request failed: {e}")
-        except json.JSONDecodeError as e:
-            print(f"JSON decode error: {e}")
+        self.load_accounts_thread = LoadAccountsThread(user_id)
+        self.load_accounts_thread.accounts_loaded.connect(self.on_accounts_loaded)
+        self.load_accounts_thread.start()
+
+    @Slot(list)
+    def on_accounts_loaded(self, accounts):
+        self.loading_movie.stop()
+        self.stack.setCurrentWidget(self.account_list_widget)  # Показать список аккаунтов
+        for account in accounts:
+            self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'], account['is_selected'])
+        self.load_sub_account_settings_from_server()  # Загружаем настройки под-аккаунтов с сервера после загрузки аккаунтов
 
     def add_account_to_list(self, account_id, name, cookies, twitch_cookies, messages, is_selected):
         account_widget = AccountWidget(account_id, name, cookies, twitch_cookies, messages, self)
@@ -1529,10 +1572,11 @@ class AccountManagerWindow(QMainWindow):
         self.account_list.setItemWidget(list_widget_item, account_widget)
         account_widget.checkbox.setChecked(is_selected)  # Устанавливаем состояние чекбокса
 
-    def change_sub_account(self, index):
-        self.save_selected_accounts()  # Сохраняем текущие выбранные аккаунты
-        self.current_sub_account = index + 1  # Обновляем текущий под-аккаунт
-        self.load_sub_account_settings()  # Загружаем настройки для выбранного под-аккаунта
+    def change_sub_account(self):
+        self.current_sub_account = int(self.sub_account_selector.currentText())
+        self.save_config()
+        self.load_sub_account_settings()
+
 
     def load_sub_account_settings(self):
         selected_accounts = self.sub_account_settings.get(str(self.current_sub_account), [])
@@ -1559,7 +1603,6 @@ class AccountManagerWindow(QMainWindow):
         center_point = screen_geometry.center()
         window_geometry.moveCenter(center_point)
         self.move(window_geometry.topLeft())
-
 
 
 # Сервер
@@ -1664,6 +1707,7 @@ class ChatWriterThread(QThread):
         self.all_messages = self.messages.splitlines()
         self.random_messages_enabled = False
         self.raffle_messages_enabled = True
+        self.cookie_is_loading = False
 
         self.sent_messages_file = f"sent_messages/sent_messages_{self.account_name}.txt"
         self.sent_messages = self.load_sent_messages()
@@ -1708,25 +1752,16 @@ class ChatWriterThread(QThread):
             site = f'https://kick.com/{self.streamer}'
             self.driver.get(site)
 
-            try:
-                button2 = self.driver.find_element(By.XPATH, '//*[@id="app"]/span/div/div[3]/button[1]')
-                button2.click()
-                #print('Кнопка нажата.')
-            except NoSuchElementException:
-                print('Кнопки 1 не найдено.')
-                
+            self.close_cookies_banner()
+                     
             self.add_cookies()
             print(f'Куки добавлены. [{self.account_name}]')
             self.driver.get(site)
-
-            # Используем WebDriverWait для ожидания элемента
-            try:
-                self.avatar_element = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="headlessui-menu-button-3"]/div/img'))
-                )
-                #print(f'Аватарка найдена. [{self.account_name}]')
-            except TimeoutException:
-                print(f'Не удалось найти аватарку. [{self.account_name}]')
+            self.check_cookies(site)
+            while not self.cookie_is_loading:
+                print(f'Пытаемя вставить куки ещё раз. [{self.account_name}]')
+                self.add_cookies()
+                self.check_cookies(site)
 
             print(f'[{self.account_name}] Готов')
             self.loaded_signal.emit()
@@ -1754,7 +1789,20 @@ class ChatWriterThread(QThread):
 
         except Exception as e:
             print(f'Ошибка в методе run() [{self.account_name}] ')
+            print(e)
             #print(e)
+
+    def close_cookies_banner(self):
+        banner_is_close = False
+        while not banner_is_close:
+            try:
+                button2 = self.driver.find_element(By.XPATH, '//*[@id="app"]/span/div/div[3]/button[1]')
+                button2.click()
+                print(f'Банер закрыт. [{self.account_name}]')
+                banner_is_close = True
+                time.sleep(1)
+            except NoSuchElementException:
+                print('Кнопки 1 не найдено.')
 
     def check_status(self):
         if self.is_running:
@@ -1767,7 +1815,8 @@ class ChatWriterThread(QThread):
             self.driver.get(site)
             self.avatar_element = self.driver.find_element(By.XPATH, '//*[@id="headlessui-menu-button-3"]/div/img')
             if self.avatar_element:
-                return True
+                self.cookie_is_loading = True
+                time.sleep(1)
         except NoSuchElementException:
             print(f'Аватарка не найдена. [{self.account_name}]')
         return False
@@ -2328,7 +2377,7 @@ class OnStartAccountManagerWindow(QMainWindow):
                 sorted_accounts = sorted(accounts, key=lambda x: x['id'])
                 for account in sorted_accounts:
                     #print(f'{account['id']}', self.selected_accounts)
-                    if f'{account['id']}' in self.selected_accounts:
+                    if f"{account['id']}" in self.selected_accounts:
                         self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'])
             else:
                 print(f"Failed to load accounts. Status code: {response.status_code}")
