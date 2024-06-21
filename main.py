@@ -386,9 +386,6 @@ class AccountManager:
             if self.active_drivers_count == 1:
                 self.data_fetcher_thread.start_parser()
     
-    def add_driver(self, driver):
-        self.drivers.append(driver)
-
     def on_chat_writer_stopped(self):
         with self.lock:
             self.active_drivers_count -= 1
@@ -396,7 +393,8 @@ class AccountManager:
                 self.data_fetcher_thread.stop_parser()
 
     def are_drivers_running(self):
-        return any(driver.is_running for driver in self.drivers)
+        with self.lock:
+            return any(widget.is_running() for widget in self.account_widgets)
 
     def log_active_drivers_count(self):
         with self.lock:
@@ -417,10 +415,11 @@ class AccountManager:
         if 'Починка началась' in message:
             print(message[2])
             key_word = message[2]
+            print(key_word)
             for widget in self.account_widgets:
                 if widget.thread and widget.thread.isRunning():
                     #widget.thread.send_message_signal.emit(key_word)
-                    print(key_word)
+                    pass
             print(f"Починка началась...")
 
         if 'Победитель' in message:
@@ -467,80 +466,95 @@ class ShopParserThread(QThread):
         self.account_name = account_name
         self.twitch_cookies = twitch_cookies
         self.product = product
+        print(self.product)
         self.is_running = True
+        self.product_collected_file = "product_collected.txt"
+        self.points_file = "account_points.txt"
+        self.driver = None
+
+    def mark_product_collected(self):
+        try:
+            with open(self.product_collected_file, 'r') as file:
+                try:
+                    data = json.load(file)
+                except json.JSONDecodeError:
+                    data = {}
+        except FileNotFoundError:
+            data = {}
+            
+        today = datetime.now().date().strftime('%Y-%m-%d')
+        if data.get(self.account_name) != today:
+            data[self.account_name] = today
+            with open(self.product_collected_file, 'w') as file:
+                json.dump(data, file)
+
+    def set_product_element(self):
+        if self.product == '':
+            product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[13]/div[2]/div[2]/div'
 
     def run(self):
+        if not self.product:
+            print('Выберите продукт.')
+            return
+        
         try:
-            with self.get_chromedriver(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            ) as self.driver:
-                if not self.driver:
-                    print(f'Не удалось инициализировать драйвер Chrome [{self.account_name}]')
-                    return
-                print(f'Окно браузера запущено. [{self.account_name}]')
+            self.driver = self.get_chromedriver(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            if not self.driver:
+                print(f'Не удалось инициализировать драйвер Chrome [{self.account_name}]')
+                return
 
-                site1 = f'https://www.twitch.tv/kishimy2'
-                site2 = f'https://www.wrewards.com'
-                
-                self.driver.get(site1)
-                self.add_cookies()
-                time.sleep(1)
-                self.driver.get(site1)
-                time.sleep(3)
-                self.driver.execute_script("window.open('');")
-                
-                second_tab = self.driver.window_handles[1]
-                self.driver.switch_to.window(second_tab)
-                
-                self.driver.get(site2)
-                time.sleep(5)
+            site1 = f'https://www.twitch.tv/kishimy2'
+            site2 = f'https://www.wrewards.com'
+            
+            self.driver.get(site1)
+            self.add_cookies()
+            self.driver.get(site1)
+            
+            self.driver.execute_script("window.open('');")
+            second_tab = self.driver.window_handles[1]
+            self.driver.switch_to.window(second_tab)
+            self.driver.get(site2)
+            
+            wait = WebDriverWait(self.driver, 10)
 
-                # Имитация действий пользователя
-
-
-                 # Логинимся в аккаунт
-                try:
-                    button = self.driver.find_element(By.XPATH, "//a[text()='Login']")
-                    button.click()
-                except NoSuchElementException:
-                    print('Кнопки login не найдено.')
-                time.sleep(2)
-                try:
-                    button = self.driver.find_element(By.XPATH, "//a[contains(text(), 'Log in via Twitch')]")
-                    button.click()
-                except NoSuchElementException:
-                    print('Кнопки login2 не найдено.')
-                time.sleep(3)
-                
-                self.driver.get('https://www.wrewards.com/advent-calendar')
-                
-                time.sleep(2)
-                
-                try:
-                    banner = self.driver.find_element(By.CLASS_NAME, 'cookie-banner-button')
-                    self.driver.execute_script("arguments[0].click();", banner)
-                    #print(f'Элемент с классом cookie-banner-button найден и нажат [{self.account_name}]')
-                except NoSuchElementException:
-                    pass
-                    #print('Элемент с классом cookie-banner-button не найден.')
-                time.sleep(1)
-                    
-                try:
-                    flip_card = self.driver.find_element(By.CLASS_NAME, 'react-flip-card')
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", flip_card)
-                    time.sleep(2)
-                    flip_card.click()
-                    #print(f'Элемент с классом react-flip-card найден и нажат [{self.account_name}]')
-                except NoSuchElementException:
-                    pass
-                    #print('Элемент с классом react-flip-card не найден.')
-
-                while self.is_running:
-                    time.sleep(1)
+            # Логинимся в аккаунт
+            try:
+                button = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[text()='Login']")))
+                button.click()
+            except NoSuchElementException:
+                print('Кнопки login не найдено.')
+            time.sleep(2)
+            try:
+                button = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Log in via Twitch')]")))
+                button.click()
+            except NoSuchElementException:
+                print('Кнопки login2 не найдено.')
+            time.sleep(3)
+            
+            self.driver.get('https://www.wrewards.com/points-shop')
+            
+            #time.sleep(3)
+            
+            try:
+                product = self.driver.find_element(By.XPATH, f"//h1[text()='{self.product}']")
+                if button:
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", product)
+                    print('Продукт найден')
+            except NoSuchElementException:
+                print('Продукт не найден')
+            time.sleep(2)
+            
         except Exception as e:
             print(f'Ошибка в методе run() [{self.account_name}] ')
             print(e)
+        finally:
+            if self.is_running:
+                self.quit()
+                self.is_running = False
 
+            
     def get_chromedriver(self, user_agent=None):
         try:
             chrome_options = uc.ChromeOptions()
@@ -560,13 +574,17 @@ class ShopParserThread(QThread):
 
             if user_agent:
                 chrome_options.add_argument(f'--user-agent={user_agent}')
+                
+            # Создаем временную директорию для профиля пользователя
+            user_data_dir = tempfile.mkdtemp()
+            chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
 
             driver = uc.Chrome(options=chrome_options)
             driver.set_window_size(1650, 1000)
             return driver
         except Exception as e:
-            print(f'Ошибка при инициализации Chromedriver: {e}')
-            return None
+            print(f'Ошибка при инициализации Chromedriver: {e}')        
+            return None 
 
     def add_cookies(self):
         try:
@@ -580,10 +598,9 @@ class ShopParserThread(QThread):
                 self.driver.add_cookie(cookie)
         except Exception as e:
             print(f'Ошибка при добавлении кук: {e}')
-
+            
     def stop(self):
         self.is_running = False
-        self.driver.quit()
         print(f'Поток {self.account_name} остановлен')
         
 class SelectProductDialog(QDialog):
@@ -592,6 +609,7 @@ class SelectProductDialog(QDialog):
         self.setWindowTitle("Выберите товар")
         self.setGeometry(100, 100, 300, 200)
         self.init_ui()
+        self.center_on_screen()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -623,7 +641,7 @@ class SelectProductDialog(QDialog):
         """)
 
         self.product_list = QListWidget(self)
-        products = ['200$ etf', '200$ ltc', '100$ steam gift', '100$ amazon gift']
+        products = ['$100 Steam Gift Card', '$100 Amazon Gift Card', '$125 SHARE in a WRewards', 'Pachinko Drop (ON STREAM)', '$200 in ETH', '$200 in Litecoin', 'Nintendo Switch', 'Oura Smart Ring Gen 3', 'PlayStation 5 (PS5)']
         self.product_list.addItems(products)
         layout.addWidget(self.product_list)
 
@@ -639,6 +657,13 @@ class SelectProductDialog(QDialog):
 
     def get_selected_product(self):
         return getattr(self, 'selected_product', None)
+    
+    def center_on_screen(self):
+        screen_geometry = QtGui.QGuiApplication.primaryScreen().availableGeometry()
+        window_geometry = self.frameGeometry()
+        center_point = screen_geometry.center()
+        window_geometry.moveCenter(center_point)
+        self.move(window_geometry.topLeft())     
                 
 class ShopAccountWidget(QWidget):
     def __init__(self, account_id, account_name, twitch_cookies, parent=None):
@@ -1671,7 +1696,7 @@ class DataFetcherThread(QThread):
 
                             if 'Стрим на канале' in message:
                                 print(message)
-                                streamer = message.split()[-1]
+                                streamer = message.split()[-2]
                                 if 'Стрим на канале' in message:   
                                     self.stream_is_over_signal.emit(streamer)
 
@@ -1763,11 +1788,11 @@ class ChatWriterThread(QThread):
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
             if not self.driver:
-                self.driver_initialized.emit(False)
                 return
+            
             print(f'Окно браузера запущено. [{self.account_name}]')
-            #site = f'https://kick.com/{self.streamer}'
-            site = f'https://kick.com/Suzuraya1'
+            site = f'https://kick.com/{self.streamer}'
+            #site = f'https://kick.com/Suzuraya1'
             self.driver.get(site)
 
             self.close_cookies_banner()
@@ -1810,17 +1835,22 @@ class ChatWriterThread(QThread):
             print(e)
             #print(e)
 
+
     def close_cookies_banner(self):
+        wait = WebDriverWait(self.driver, 10)
         banner_is_close = False
-        while not banner_is_close:
-            try:
-                button2 = self.driver.find_element(By.XPATH, '//*[@id="app"]/span/div/div[3]/button[1]')
-                button2.click()
-                print(f'Банер закрыт. [{self.account_name}]')
-                banner_is_close = True
+        for i in range(5):
+            if not banner_is_close:
+                try:
+                    button2 = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="app"]/span/div/div[3]/button[1]')))
+                    button2.click()
+                    print(f'Банер закрыт. [{self.account_name}]')
+                    banner_is_close = True
+                except Exception as e:
+                    print('Не удалось закрыть банер.')
                 time.sleep(1)
-            except NoSuchElementException:
-                print('Кнопки 1 не найдено.')
+            else:
+                break
 
     def check_status(self):
         if self.is_running:
