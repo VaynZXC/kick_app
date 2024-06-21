@@ -373,6 +373,8 @@ class AccountManager:
         self.account_widgets = []
         self.lock = Lock()
         self.wg_pochinka_enabled = True
+        self.drivers = []
+        self.current_sub_account = None
     
 
     def add_account_widget(self, account_widget):
@@ -383,6 +385,9 @@ class AccountManager:
             self.active_drivers_count += 1
             if self.active_drivers_count == 1:
                 self.data_fetcher_thread.start_parser()
+    
+    def add_driver(self, driver):
+        self.drivers.append(driver)
 
     def on_chat_writer_stopped(self):
         with self.lock:
@@ -391,8 +396,7 @@ class AccountManager:
                 self.data_fetcher_thread.stop_parser()
 
     def are_drivers_running(self):
-        with self.lock:
-            return any(widget.is_running() for widget in self.account_widgets)
+        return any(driver.is_running for driver in self.drivers)
 
     def log_active_drivers_count(self):
         with self.lock:
@@ -433,6 +437,9 @@ class AccountManager:
     def set_wg_pochinka_enabled(self, enabled):
         self.wg_pochinka_enabled = enabled
         #print(f'WG и Pochinka сообщения включены: {self.wg_pochinka_enabled}')
+    
+    def set_current_sub_account(self, sub_account_id):
+        self.current_sub_account = sub_account_id
                     
     def get_selected_accounts(self):
         selected_accounts = []
@@ -1618,6 +1625,8 @@ class DataFetcherThread(QThread):
         self.parser_started = False
         self.account_manager = account_manager
         self.is_running = True
+        self.current_sub_account = None
+        self.lead_sub_account()
 
     def run(self):
         last_processed_id = None
@@ -1630,7 +1639,8 @@ class DataFetcherThread(QThread):
                         return
                     if i == 1:
                         user_id = get_user_id()
-                        params = {'user_id': user_id}
+                        sub_account_id = self.current_sub_account
+                        params = {'user_id': user_id, 'sub_account_id': sub_account_id}
                         response = requests.get('http://188.225.86.91:5000/get_data', params=params)
                         if response.status_code == 200:
                             data = response.json()
@@ -1649,7 +1659,8 @@ class DataFetcherThread(QThread):
                                 print(message)
                                 split_message = message.split()
                                 streamer = split_message[4]
-                                self.stream_is_start_signal.emit(streamer)
+                                if not self.account_manager.are_drivers_running():
+                                    self.stream_is_start_signal.emit(streamer)
                                 self.change_streamer_name_signal.emit(streamer)
 
                             if 'передал рейд' in message:
@@ -1671,6 +1682,12 @@ class DataFetcherThread(QThread):
 
             except Exception as e:
                 print(e)
+
+    def lead_sub_account(self):
+        if os.path.exists('config.json'):
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+                self.current_sub_account = config.get('current_sub_account', 1)
 
     def start_parser(self):
         self.parser_started = True
@@ -1714,7 +1731,7 @@ class ChatWriterThread(QThread):
         
     def set_random_messages_enabled(self, enabled):
         self.random_messages_enabled = enabled
-        print(f'[{self.account_name}] Основные сообщения включены: {self.random_messages_enabled}')
+        print(f'[{self.account_name}] Рандомные сообщения включены: {self.random_messages_enabled}')
     
     def set_raffle_messages_enabled(self, enabled):
         self.raffle_messages_enabled = enabled
@@ -1730,7 +1747,7 @@ class ChatWriterThread(QThread):
         if self.streamer == 'WatchGamesTV':
             self.streamer_name = 'ibby'
         elif self.streamer == 'Hyuslive':
-            self.streamer_name = 'bro'
+            self.streamer_name = 'hyus'
         elif self.streamer == 'WRewards':
             self.streamer_name = 'bro'
         elif self.streamer == 'pkle':
@@ -1749,7 +1766,8 @@ class ChatWriterThread(QThread):
                 self.driver_initialized.emit(False)
                 return
             print(f'Окно браузера запущено. [{self.account_name}]')
-            site = f'https://kick.com/{self.streamer}'
+            #site = f'https://kick.com/{self.streamer}'
+            site = f'https://kick.com/Suzuraya1'
             self.driver.get(site)
 
             self.close_cookies_banner()
