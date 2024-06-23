@@ -29,6 +29,7 @@ import weakref
 import psutil
 import threading
 from datetime import datetime, time as dtime
+import subprocess
 
 from main_window import Ui_MainWindow
 
@@ -525,7 +526,6 @@ class ShopParserThread(QThread):
                 button.click()
             except NoSuchElementException:
                 print('Кнопки login не найдено.')
-            time.sleep(2)
             try:
                 button = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Log in via Twitch')]")))
                 button.click()
@@ -916,16 +916,14 @@ class CalendarParserThread(QThread):
             self.finished.emit(self.account_name)
             return
         
-        try:
+        try: 
             self.driver = self.get_chromedriver(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
+            )   
             if not self.driver:
                 print(f'Не удалось инициализировать драйвер Chrome [{self.account_name}]')
                 self.finished.emit(self.account_name)
                 return
-            
-            #print(f'Окно браузера запущено. [{self.account_name}]')
 
             site1 = f'https://www.twitch.tv/kishimy2'
             site2 = f'https://www.wrewards.com'
@@ -947,26 +945,20 @@ class CalendarParserThread(QThread):
                 button.click()
             except NoSuchElementException:
                 print('Кнопки login не найдено.')
-            time.sleep(2)
             try:
                 button = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Log in via Twitch')]")))
                 button.click()
             except NoSuchElementException:
                 print('Кнопки login2 не найдено.')
-            time.sleep(3)
             
             self.driver.get('https://www.wrewards.com/advent-calendar')
             
-            time.sleep(2)
             
             try:
                 banner = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'cookie-banner-button')))
                 self.driver.execute_script("arguments[0].click();", banner)
-                #print(f'Элемент с классом cookie-banner-button найден и нажат [{self.account_name}]')
             except NoSuchElementException:
                 pass
-                #print('Элемент с классом cookie-banner-button не найден.')
-            time.sleep(1)
                 
             try:
                 balance = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="menu-button-:r3q:"]')))
@@ -976,30 +968,24 @@ class CalendarParserThread(QThread):
                 points_count = points.text
                 self.save_points(self.account_name, points_count)
             except NoSuchElementException:
-                print(f'Акканут {self.account_name} уже забирал календарь сегодня.')
+                print(f'Не получилось посмотреть поинты на аккаунте {self.account_name}.')
                 
             try:
-                flip_card = self.driver.find_element(By.CLASS_NAME, 'react-flip-card')
+                flip_card = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'react-flip-card')))
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", flip_card)
-                time.sleep(3)
                 flip_card.click()
-                time.sleep(5)
+                wait.until(EC.visibility_of_element_located((By.CLASS_NAME, 'react-flip-card')))  # Ожидание после клика
                 print(f'Акканут {self.account_name} забрал календарь.')
                 self.mark_reward_collected()
-            except NoSuchElementException:
+            except Exception:
                 print(f'Акканут {self.account_name} уже забирал календарь сегодня.')
 
+            
         except Exception as e:
             print(f'Ошибка в методе run() [{self.account_name}] ')
             print(e)
         finally:
-            if self.driver:
-                try:
-                    time.sleep(2)
-                    self.driver.quit()
-                except Exception as e:
-                    print(f'Ошибка при закрытии драйвера: {e}')
-            self.finished.emit(self.account_name)
+            self.stop()
             
     def get_chromedriver(self, user_agent=None):
         try:
@@ -1024,13 +1010,14 @@ class CalendarParserThread(QThread):
             # Создаем временную директорию для профиля пользователя
             user_data_dir = tempfile.mkdtemp()
             chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
-
+            
             driver = uc.Chrome(options=chrome_options)
-            driver.set_window_size(1650, 1000)
+            driver.set_window_size(1650, 850)
             return driver
         except Exception as e:
             print(f'Ошибка при инициализации Chromedriver: {e}')        
             return None 
+    
 
     def add_cookies(self):
         try:
@@ -1201,7 +1188,7 @@ class CalendarParserWindow(QMainWindow):
         if not self.task_queue.empty():
             widget = self.task_queue.get()
             self.is_running = True
-            if not hasattr(widget, 'thread') or widget.thread is None or not widget.thread.isRunning():
+            if not hasattr(widget, 'thread') or widget.thread is None:
                 widget.thread = CalendarParserThread(widget.account_name, widget.twitch_cookies, self)
                 widget.thread.finished.connect(self.on_task_finished)
                 widget.thread.start()
@@ -1213,7 +1200,6 @@ class CalendarParserWindow(QMainWindow):
     @Slot()
     def on_task_finished(self):
         #print('on_task_finished called')
-        self.sender().deleteLater()  # Удаляем завершенный поток
         self.run_next_task()
 
     def load_accounts(self):
@@ -1653,10 +1639,16 @@ class DataFetcherThread(QThread):
         self.current_sub_account = None
         self.lead_sub_account()
 
+    def load_config(self):
+        if os.path.exists('config.json'):
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+                self.current_sub_account = config.get('current_sub_account', 1)
+                
     def run(self):
         last_processed_id = None
         print('DataFetcherThread начал работу.')
-
+        
         while self.is_running:
             try:
                 for i in range(50):
@@ -1664,6 +1656,7 @@ class DataFetcherThread(QThread):
                         return
                     if i == 1:
                         user_id = get_user_id()
+                        self.load_config()
                         sub_account_id = self.current_sub_account
                         params = {'user_id': user_id, 'sub_account_id': sub_account_id}
                         response = requests.get('http://188.225.86.91:5000/get_data', params=params)
