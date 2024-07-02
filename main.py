@@ -3,13 +3,13 @@ from PySide6.QtWidgets import QDialog, QCheckBox, QMessageBox, QApplication, QMa
 from PySide6.QtWidgets import QListWidgetItem, QWidget, QHBoxLayout, QGraphicsDropShadowEffect, QTextEdit, QComboBox, QSizePolicy, QStackedWidget
 from PySide6.QtCore import Qt, QPoint, Signal, QThread, Slot, QTimer, QSize
 from PySide6.QtGui import QMouseEvent, QFont, QColor, QPainter, QTextOption, QMovie
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-import undetected_chromedriver as uc
+from seleniumwire import undetected_chromedriver as uc
 from selenium import webdriver
 import sys
 import json
@@ -30,6 +30,8 @@ import psutil
 import threading
 from datetime import datetime, time as dtime
 import subprocess
+from selenium.webdriver.common.proxy import Proxy, ProxyType
+
 
 from main_window import Ui_MainWindow
 
@@ -38,65 +40,82 @@ current_user_id = None
 def get_user_id():
     return current_user_id
 
+CHROMEDRIVER_PATH = 'chromdriver/chromedriver.exe'
+
 # Прокси
-PROXY_HOST ='45.145.160.170'
+PROXY_HOST ='45.95.148.134'
 PROXY_PORT ='8000'
-PROXY_USER = 'AYmYzc'
-PROXY_PASS = 'rgmbPV'
+PROXY_USER = 'xaDwNA'
+PROXY_PASS = '4fZje1'
 
-# Настройка прокси
-manifest_json = """
-{
-    "version": "1.0.0",
-    "manifest_version": 2,
-    "name": "Chrome Proxy",
-    "permissions": [
-        "proxy",
-        "tabs",
-        "unlimitedStorage",
-        "storage",
-        "<all_urls>",
-        "webRequest",
-        "webRequestBlocking"
-    ],
-    "background": {
-        "scripts": ["background.js"]
-    },
-    "minimum_chrome_version":"22.0.0"
-}
-"""
-
-background_js = """
-var config = {
-        mode: "fixed_servers",
-        rules: {
-        singleProxy: {
-            scheme: "http",
-            host: "%s",
-            port: parseInt(%s)
+# Создание прокси плагина
+def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass):
+    manifest_json = {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "<all_urls>",
+            "webRequest",
+            "webRequestBlocking"
+        ],
+        "background": {
+            "scripts": ["background.js"]
         },
-        bypassList: ["localhost"]
-        }
-    };
+        "minimum_chrome_version":"22.0.0"
+    }
 
-chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+    background_js = f"""
+    var config = {{
+            mode: "fixed_servers",
+            rules: {{
+            singleProxy: {{
+                scheme: "http",
+                host: "{proxy_host}",
+                port: parseInt("{proxy_port}")
+            }},
+            bypassList: ["localhost"]
+            }}
+        }};
 
-function callbackFn(details) {
-    return {
-        authCredentials: {
-            username: "%s",
-            password: "%s"
-        }
-    };
-}
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
 
-chrome.webRequest.onAuthRequired.addListener(
-            callbackFn,
-            {urls: ["<all_urls>"]},
-            ['blocking']
-);
-""" % (PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS)
+    function callbackFn(details) {{
+        return {{
+            authCredentials: {{
+                username: "{proxy_user}",
+                password: "{proxy_pass}"
+            }}
+        }};
+    }}
 
+    chrome.webRequest.onAuthRequired.addListener(
+                callbackFn,
+                {{urls: ["<all_urls>"]}},
+                ['blocking']
+    );
+    """
+
+    extension_dir = os.path.join(os.getcwd(), "proxy_auth_extension")
+    if not os.path.exists(extension_dir):
+        os.makedirs(extension_dir)
+
+    with open(os.path.join(extension_dir, "manifest.json"), "w") as f:
+        json.dump(manifest_json, f, indent=4)
+
+    with open(os.path.join(extension_dir, "background.js"), "w") as f:
+        f.write(background_js)
+
+    zip_path = os.path.join(os.getcwd(), "proxy_auth_extension.zip")
+    with zipfile.ZipFile(zip_path, 'w') as zp:
+        zp.write(os.path.join(extension_dir, "manifest.json"), "manifest.json")
+        zp.write(os.path.join(extension_dir, "background.js"), "background.js")
+
+    return zip_path
 
 # Костыли
 class ClickableLabel(QLabel):
@@ -116,13 +135,14 @@ class ClickableFrame(QFrame):
         self.label.clicked.connect(self.clicked.emit)
         
 class AccountSettingsDialog(QDialog):
-    def __init__(self, account_id, account_name, cookies, twitch_cookies, messages, parent=None):
+    def __init__(self, account_id, account_name, cookies, twitch_cookies, messages, account_proxy, parent=None):
         super(AccountSettingsDialog, self).__init__(parent)
         self.account_id = account_id
         self.account_name = account_name
         self.cookies = cookies
         self.twitch_cookies = twitch_cookies
         self.messages = messages
+        self.account_proxy = account_proxy
         self.init_ui()
         self.setGeometry(100, 100, 800, 600)
         self.center_on_screen()
@@ -185,6 +205,16 @@ class AccountSettingsDialog(QDialog):
         self.messages_edit.setPlainText("\n".join(self.messages.splitlines()))
         self.messages_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         layout.addWidget(self.messages_edit)
+
+        self.account_proxy_edit = QLineEdit(self)
+        self.account_proxy_edit.setText(self.account_proxy)
+        self.account_proxy_edit.setPlaceholderText("Прокси")
+        self.account_proxy_edit.setMaxLength(100)
+        font = QFont()
+        font.setFamilies([u"Gotham Pro Black"])
+        font.setPointSize(12)
+        self.account_proxy_edit.setFont(font)
+        layout.addWidget(self.account_proxy_edit)
         
         # Twitch cookies
         self.twitch_cookies_edit = QTextEdit()
@@ -208,7 +238,7 @@ class AccountSettingsDialog(QDialog):
         cancel_button.setFont(font)
         buttons_layout.addWidget(save_button)
         buttons_layout.addWidget(cancel_button)
-
+        
         save_button.clicked.connect(self.save_changes)
         cancel_button.clicked.connect(self.reject)
 
@@ -226,7 +256,8 @@ class AccountSettingsDialog(QDialog):
             'name': self.account_name_edit.text(),
             'cookies': self.cookies_edit.toPlainText(),
             'twitch_cookies': self.twitch_cookies_edit.toPlainText(),
-            'messages': self.messages_edit.toPlainText()
+            'messages': self.messages_edit.toPlainText(),
+            'account_proxy': self.account_proxy_edit.text()
         }
         response = requests.post('http://77.232.131.189:5000/update_kick_account', json=data)
         if response.status_code == 200:
@@ -461,18 +492,47 @@ class AccountManager:
 
 
 # Парсер магазина
+# Имя файла для сохранения выбранных товаров
+PRODUCT_SELECTION_FILE = 'product_selection.json'
+
+def load_product_selection():
+    if os.path.exists(PRODUCT_SELECTION_FILE):
+        with open(PRODUCT_SELECTION_FILE, 'r') as file:
+            return json.load(file)
+    return {}
+
+def save_product_selection(product_selection):
+    with open(PRODUCT_SELECTION_FILE, 'w') as file:
+        json.dump(product_selection, file, indent=4)
+  
+def load_account_points(filename='account_points.txt'):
+    account_points = {}
+    try:
+        with open(filename, 'r') as file:
+            for line in file:
+                parts = line.strip().split(',')
+                if len(parts) == 4:
+                    _, account_name, thousands, hundreds = parts
+                    total_points = int(thousands) * 1000 + int(hundreds)
+                    account_points[account_name] = total_points
+    except FileNotFoundError:
+        print(f"Файл {filename} не найден.")
+    return account_points
+        
 class ShopParserThread(QThread):
-    def __init__(self, account_name, twitch_cookies, product, parent=None):
+    def __init__(self, account_name, twitch_cookies, account_proxy, product, parent=None):
         super(ShopParserThread, self).__init__(parent)
         self.account_name = account_name
         self.twitch_cookies = twitch_cookies
+        self.account_proxy = account_proxy
         self.product = product
-        print(self.product)
+        self.product_status = None
+        self.is_bought = False
         self.is_running = True
         self.product_collected_file = "product_collected.txt"
         self.points_file = "account_points.txt"
         self.driver = None
-
+        
     def mark_product_collected(self):
         try:
             with open(self.product_collected_file, 'r') as file:
@@ -490,8 +550,25 @@ class ShopParserThread(QThread):
                 json.dump(data, file)
 
     def set_product_element(self):
-        if self.product == '':
-            product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[13]/div[2]/div[2]/div'
+        if self.product == '$100 Steam Gift Card':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[17]/div[2]/div[2]/div'
+        if self.product == '$100 Amazon Gift Card':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[16]/div[2]/div[2]/div'
+        if self.product == '$125 SHARE in a WRewards':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[15]/div[2]/div[2]/div'
+        if self.product == 'Pachinko Drop (ON STREAM)':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[14]/div[2]/div[2]/div'
+        if self.product == '$200 in ETH':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[13]/div[2]/div[2]/div'
+        if self.product == '$200 in Litecoin':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[12]/div[2]/div[2]/div'
+        if self.product == 'Nintendo Switch':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[11]/div[2]/div[2]/div'
+        if self.product == 'Oura Smart Ring Gen 3':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[10]/div[2]/div[2]/div'
+        if self.product == 'PlayStation 5 (PS5)':
+            self.product_element = '//*[@id="__next"]/div/div[3]/div[3]/div[2]/div/div/div[1]/div[9]/div[2]/div[2]/div'
+            
 
     def run(self):
         if not self.product:
@@ -500,6 +577,7 @@ class ShopParserThread(QThread):
         
         try:
             self.driver = self.get_chromedriver(
+                use_proxy = True,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
             if not self.driver:
@@ -509,9 +587,11 @@ class ShopParserThread(QThread):
             site1 = f'https://www.twitch.tv/kishimy2'
             site2 = f'https://www.wrewards.com'
             
+            # self.driver.get('https://pr-cy.ru/browser-details/')
+            # time.sleep(10)
+            
             self.driver.get(site1)
             self.add_cookies()
-            self.driver.get(site1)
             
             self.driver.execute_script("window.open('');")
             second_tab = self.driver.window_handles[1]
@@ -519,6 +599,8 @@ class ShopParserThread(QThread):
             self.driver.get(site2)
             
             wait = WebDriverWait(self.driver, 10)
+
+            self.set_product_element()
 
             # Логинимся в аккаунт
             try:
@@ -538,10 +620,22 @@ class ShopParserThread(QThread):
             #time.sleep(3)
             
             try:
-                product = self.driver.find_element(By.XPATH, f"//h1[text()='{self.product}']")
+                product = wait.until(EC.element_to_be_clickable((By.XPATH, self.product_element)))
                 if button:
                     self.driver.execute_script("arguments[0].scrollIntoView(true);", product)
-                    print('Продукт найден')
+                    print(f'{self.account_name} Продукт найден.')
+                    while not self.is_bought:
+                        if product.text == 'SOLD OUT':
+                            print(f'[{self.account_name}] {self.product} нет в наличии.')
+                            time.sleep(1)
+                        elif product.text == 'BUY':
+                            print(f'[{self.account_name}] Покупаем {self.product}')
+                            time.sleep(1)
+                            product.click()
+                            accept_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="chakra-modal--body-:R1t1ium6:"]/div/div[2]/div[2]/div')))
+                            time.sleep(1)
+                            accept_btn.click()
+                            self.is_bought = True
             except NoSuchElementException:
                 print('Продукт не найден')
             time.sleep(2)
@@ -555,7 +649,7 @@ class ShopParserThread(QThread):
                 self.is_running = False
 
             
-    def get_chromedriver(self, user_agent=None):
+    def get_chromedriver(self, use_proxy=True, user_agent=None):
         try:
             chrome_options = uc.ChromeOptions()
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -574,17 +668,96 @@ class ShopParserThread(QThread):
 
             if user_agent:
                 chrome_options.add_argument(f'--user-agent={user_agent}')
+
+            if use_proxy and self.account_proxy:  
+                split_proxy = self.account_proxy.split(':')
+                PROXY_HOST = split_proxy[0]
+                PROXY_PORT = split_proxy[1]
+                PROXY_USER = split_proxy[2]
+                PROXY_PASS = split_proxy[3]
+                wire_options = {
+                        'proxy': {
+                            'https': f'https://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}',
+                        }
+                    }
                 
-            # Создаем временную директорию для профиля пользователя
             user_data_dir = tempfile.mkdtemp()
             chrome_options.add_argument(f'--user-data-dir={user_data_dir}')
 
-            driver = uc.Chrome(options=chrome_options)
-            driver.set_window_size(1650, 1000)
+            driver = uc.Chrome(options=chrome_options, seleniumwire_options=wire_options)
+            driver.set_window_size(1650, 900)
             return driver
         except Exception as e:
             print(f'Ошибка при инициализации Chromedriver: {e}')        
             return None 
+
+    def create_proxy_auth_extension(self, proxy_host, proxy_port, proxy_user, proxy_pass):
+        manifest_json = {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "Chrome Proxy",
+            "permissions": [
+                "proxy",
+                "tabs",
+                "unlimitedStorage",
+                "storage",
+                "<all_urls>",
+                "webRequest",
+                "webRequestBlocking"
+            ],
+            "background": {
+                "scripts": ["background.js"]
+            },
+            "minimum_chrome_version":"22.0.0"
+        }
+
+        background_js = f"""
+        var config = {{
+                mode: "fixed_servers",
+                rules: {{
+                singleProxy: {{
+                    scheme: "http",
+                    host: "{proxy_host}",
+                    port: parseInt("{proxy_port}")
+                }},
+                bypassList: ["localhost"]
+                }}
+            }};
+
+        chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+        function callbackFn(details) {{
+            return {{
+                authCredentials: {{
+                    username: "{proxy_user}",
+                    password: "{proxy_pass}"
+                }}
+            }};
+        }}
+
+        chrome.webRequest.onAuthRequired.addListener(
+                    callbackFn,
+                    {{urls: ["<all_urls>"]}},
+                    ['blocking']
+        );
+        """
+
+        extension_dir = os.path.join(os.getcwd(), "proxy_auth_extension")
+        if not os.path.exists(extension_dir):
+            os.makedirs(extension_dir)
+
+        with open(os.path.join(extension_dir, "manifest.json"), "w") as f:
+            json.dump(manifest_json, f, indent=4)
+
+        with open(os.path.join(extension_dir, "background.js"), "w") as f:
+            f.write(background_js)
+
+        zip_path = os.path.join(os.getcwd(), "proxy_auth_extension.zip")
+        with zipfile.ZipFile(zip_path, 'w') as zp:
+            zp.write(os.path.join(extension_dir, "manifest.json"), "manifest.json")
+            zp.write(os.path.join(extension_dir, "background.js"), "background.js")
+
+        return zip_path
 
     def add_cookies(self):
         try:
@@ -597,7 +770,7 @@ class ShopParserThread(QThread):
                     cookie['sameSite'] = 'None'
                 self.driver.add_cookie(cookie)
         except Exception as e:
-            print(f'Ошибка при добавлении кук: {e}')
+            print(f'Ошибка при добавлении кук: {e}')      
             
     def stop(self):
         self.is_running = False
@@ -666,12 +839,15 @@ class SelectProductDialog(QDialog):
         self.move(window_geometry.topLeft())     
                 
 class ShopAccountWidget(QWidget):
-    def __init__(self, account_id, account_name, twitch_cookies, parent=None):
+    def __init__(self, account_id, account_name, twitch_cookies, account_proxy, points, parent=None):
         super().__init__(parent)
         self.account_id = account_id
         self.account_name = account_name
         self.twitch_cookies = twitch_cookies
+        self.account_proxy = account_proxy
+        self.points = points
         self.init_ui()
+        self.load_selected_product()
 
     def init_ui(self):
         layout = QHBoxLayout(self)
@@ -682,7 +858,7 @@ class ShopAccountWidget(QWidget):
         font_large.setFamilies([u"Gotham Pro Black"])
         font_large.setPointSize(14)
 
-        self.account_label = QLabel(self.account_name)
+        self.account_label = QLabel(f"{self.account_name} ({self.points} поинтов)")
         self.account_label.setFont(font_large)
         layout.addWidget(self.account_label, 4)
 
@@ -704,18 +880,34 @@ class ShopAccountWidget(QWidget):
             selected_product = dialog.get_selected_product()
             if selected_product:
                 self.select_product_button.setText(selected_product)
+                self.save_selected_product(selected_product)
 
     def start_parser(self):
-        self.thread = ShopParserThread(self.account_name, self.twitch_cookies, self.select_product_button.text())
-        self.thread.start()
+        if self.select_product_button.text() != 'Выбрать товар':
+            self.thread = ShopParserThread(self.account_name, self.twitch_cookies, self.account_proxy, self.select_product_button.text())
+            self.thread.start()
+        else:
+            print('Выберите товар.')
+        
+    def save_selected_product(self, product):
+        product_selection = load_product_selection()
+        product_selection[self.account_id] = product
+        save_product_selection(product_selection)
+
+    def load_selected_product(self):
+        product_selection = load_product_selection()
+        selected_product = product_selection.get(str(self.account_id))  # Приведение к строке
+        if selected_product:
+            self.select_product_button.setText(selected_product)
       
 class ShopParserWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Парсер магазина")
-        self.setGeometry(100, 100, 550, 600)
+        self.setGeometry(100, 100, 750, 600)
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.init_ui()
+        self.account_points = load_account_points()
         self.load_accounts()
         self.old_pos = None
         self.center_on_screen()
@@ -758,7 +950,7 @@ class ShopParserWindow(QMainWindow):
         self.close_button = QPushButton("X", self.header)
         self.close_button.setStyleSheet("QPushButton { color: red; font-weight: bold; border-radius: 5px; }")
         self.close_button.clicked.connect(self.close)
-        self.close_button.setGeometry(485, 5, 40, 30)
+        self.close_button.setGeometry(685, 5, 40, 30)
 
         self.account_list = QListWidget()
         layout.addWidget(self.account_list)
@@ -776,7 +968,7 @@ class ShopParserWindow(QMainWindow):
             }
         """)
         self.minimize_button.clicked.connect(self.showMinimized)
-        self.minimize_button.setGeometry(450, 5, 40, 30)
+        self.minimize_button.setGeometry(650, 5, 40, 30)
         
 
     def load_accounts(self):
@@ -785,15 +977,16 @@ class ShopParserWindow(QMainWindow):
             print("User ID is not set. Cannot load accounts.")
             return
 
-        self.account_list.clear()  # Очищаем список перед загрузкой новых аккаунтов
+        self.account_list.clear()
 
         try:
             response = requests.get('http://77.232.131.189:5000/get_kick_accounts', params={'user_id': user_id})
             if response.status_code == 200:
                 accounts_data = response.json()
                 accounts = accounts_data.get('accounts', [])
-                for account in accounts:
-                    self.add_account_to_list(account['id'], account['name'], account.get('twitch_cookies', ''))
+                sorted_accounts = sorted(accounts, key=lambda x: x['id'])
+                for account in sorted_accounts:
+                    self.add_account_to_list(account['id'], account['name'], account['twitch_cookies'], account['account_proxy'])
             else:
                 print(f"Failed to load accounts. Status code: {response.status_code}")
         except requests.exceptions.RequestException as e:
@@ -801,8 +994,9 @@ class ShopParserWindow(QMainWindow):
         except json.JSONDecodeError as e:
             print(f"JSON decode error: {e}")
 
-    def add_account_to_list(self, account_id, name, twitch_cookies):
-        account_widget = ShopAccountWidget(account_id, name, twitch_cookies, self)
+    def add_account_to_list(self, account_id, name, twitch_cookies, account_proxy):
+        points = self.account_points.get(name, '0')
+        account_widget = ShopAccountWidget(account_id, name, twitch_cookies, account_proxy, points, self)
         list_widget_item = QListWidgetItem(self.account_list)
         list_widget_item.setSizeHint(account_widget.sizeHint())
         self.account_list.addItem(list_widget_item)
@@ -862,48 +1056,27 @@ class CalendarParserThread(QThread):
             with open(self.rewards_file, 'w') as file:
                 json.dump(data, file)
 
-    def mark_reward_collected(self):
-        try:
-            with open(self.rewards_file, 'r') as file:
-                try:
-                    data = json.load(file)
-                except json.JSONDecodeError:
-                    data = {}
-        except FileNotFoundError:
-            data = {}
-            
-        today = datetime.now().date().strftime('%Y-%m-%d')
-        if data.get(self.account_name) != today:
-            data[self.account_name] = today
-            with open(self.rewards_file, 'w') as file:
-                json.dump(data, file)
-
     def save_points(self, account_name, points_count):
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         updated = False
         lines = []
         try:
-            # Читаем существующие записи
             with open(self.points_file, 'r') as file:
                 lines = file.readlines()
             
-            # Обновляем запись, если аккаунт уже существует
             for i in range(len(lines)):
                 if lines[i].split(',')[1] == account_name:
                     lines[i] = f'{current_time},{account_name},{points_count}\n'
                     updated = True
                     break
             
-            # Добавляем новую запись, если аккаунта нет в списке
             if not updated:
                 lines.append(f'{current_time},{account_name},{points_count}\n')
             
-            # Записываем обновленные записи обратно в файл
             with open(self.points_file, 'w') as file:
                 file.writelines(lines)
 
         except FileNotFoundError:
-            # Если файл не существует, создаем его и записываем новую запись
             with open(self.points_file, 'w') as file:
                 file.write(f'{current_time},{account_name},{points_count}\n')
             print(f'File {self.points_file} created and points for {account_name} saved successfully.')
@@ -918,6 +1091,7 @@ class CalendarParserThread(QThread):
         
         try: 
             self.driver = self.get_chromedriver(
+                use_proxy = False,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )   
             if not self.driver:
@@ -930,7 +1104,6 @@ class CalendarParserThread(QThread):
             
             self.driver.get(site1)
             self.add_cookies()
-            self.driver.get(site1)
             
             self.driver.execute_script("window.open('');")
             second_tab = self.driver.window_handles[1]
@@ -938,7 +1111,7 @@ class CalendarParserThread(QThread):
             self.driver.get(site2)
             
             wait = WebDriverWait(self.driver, 10)
-
+            
             # Логинимся в аккаунт
             try:
                 button = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[text()='Login']")))
@@ -973,11 +1146,16 @@ class CalendarParserThread(QThread):
             try:
                 flip_card = wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'react-flip-card')))
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", flip_card)
+                time.sleep(4)
                 flip_card.click()
-                wait.until(EC.visibility_of_element_located((By.CLASS_NAME, 'react-flip-card')))  # Ожидание после клика
+                after_menu = wait.until(EC.element_to_be_clickable((By.XPATH, "//div[text()='Claim raffle entry']")))
+                if after_menu:
+                    print('кнопка найдена')
                 print(f'Акканут {self.account_name} забрал календарь.')
                 self.mark_reward_collected()
-            except Exception:
+                time.sleep(3)
+            except Exception as e:
+                print(e)
                 print(f'Акканут {self.account_name} уже забирал календарь сегодня.')
 
             
@@ -986,8 +1164,9 @@ class CalendarParserThread(QThread):
             print(e)
         finally:
             self.stop()
+            self.finished.emit(self.account_name)
             
-    def get_chromedriver(self, user_agent=None):
+    def get_chromedriver(self, use_proxy=None, user_agent=None):
         try:
             chrome_options = uc.ChromeOptions()
             chrome_options.add_argument('--disable-blink-features=AutomationControlled')
@@ -1039,7 +1218,7 @@ class CalendarParserThread(QThread):
                 self.driver.quit()
             except Exception as e:
                 print(f'Ошибка при закрытии драйвера: {e}')
-        print(f'Поток {self.account_name} остановлен')
+        #print(f'Поток {self.account_name} остановлен')
      
 class CalendarAccountWidget(QWidget):
     finished = Signal()
@@ -1252,13 +1431,14 @@ class CalendarParserWindow(QMainWindow):
         
 # Менеджек аккаунтов     
 class AccountWidget(QWidget):
-    def __init__(self, account_id, account_name, cookies, twitch_cookies, messages, manager_window, parent=None):
+    def __init__(self, account_id, account_name, cookies, twitch_cookies, messages, account_proxy,  manager_window, parent=None):
         super().__init__(parent)
-        self.account_id = str(account_id)  # Преобразуем идентификатор в строку
+        self.account_id = str(account_id) 
         self.account_name = account_name
         self.cookies = cookies
         self.twitch_cookies = twitch_cookies
         self.messages = messages
+        self.account_proxy = account_proxy
         self.manager_window = manager_window
         self.init_ui()
 
@@ -1294,11 +1474,11 @@ class AccountWidget(QWidget):
         self.setLayout(layout)
 
     def show_settings(self):
-        dialog = AccountSettingsDialog(self.account_id, self.account_name, self.cookies, self.twitch_cookies, self.messages, self)
+        dialog = AccountSettingsDialog(self.account_id, self.account_name, self.cookies, self.twitch_cookies, self.messages, self.account_proxy,self)
         if dialog.exec() == QDialog.Accepted:
             self.account_name = dialog.account_name_edit.text()
             self.cookies = dialog.cookies_edit.toPlainText()
-            self.twitch_cookies = dialog.twitch_cookies_edit.toPlainText()  # Новое поле
+            self.twitch_cookies = dialog.twitch_cookies_edit.toPlainText() 
             self.messages = dialog.messages_edit.toPlainText()
             self.account_label.setText(self.account_name)
 
@@ -1320,7 +1500,7 @@ class AccountWidget(QWidget):
         response = requests.post('http://77.232.131.189:5000/delete_kick_account', json=data)
         if response.status_code == 200:
             QMessageBox.information(self, "Success", "Account successfully deleted.")
-            self.manager_window.load_accounts()  # Обновляем список аккаунтов после удаления
+            self.manager_window.load_accounts() 
         else:
             QMessageBox.critical(self, "Error", "Failed to delete account. Server responded with an error.")
      
@@ -1566,8 +1746,8 @@ class AccountManagerWindow(QMainWindow):
             print("User ID is not set. Cannot load accounts.")
             return
 
-        self.account_list.clear()  # Очищаем список перед загрузкой новых аккаунтов
-        self.stack.setCurrentWidget(self.loading_widget)  # Показать анимацию загрузки
+        self.account_list.clear()
+        self.stack.setCurrentWidget(self.loading_widget)
         self.loading_movie.start()
 
         self.load_accounts_thread = LoadAccountsThread(user_id)
@@ -1577,13 +1757,13 @@ class AccountManagerWindow(QMainWindow):
     @Slot(list)
     def on_accounts_loaded(self, accounts):
         self.loading_movie.stop()
-        self.stack.setCurrentWidget(self.account_list_widget)  # Показать список аккаунтов
+        self.stack.setCurrentWidget(self.account_list_widget)
         for account in accounts:
-            self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'], account['is_selected'])
-        self.load_sub_account_settings_from_server()  # Загружаем настройки под-аккаунтов с сервера после загрузки аккаунтов
+            self.add_account_to_list(account['id'], account['name'], account['cookies'], account['twitch_cookies'], account['messages'], account['account_proxy'], account['is_selected'])
+        self.load_sub_account_settings_from_server()
 
-    def add_account_to_list(self, account_id, name, cookies, twitch_cookies, messages, is_selected):
-        account_widget = AccountWidget(account_id, name, cookies, twitch_cookies, messages, self)
+    def add_account_to_list(self, account_id, name, cookies, twitch_cookies, messages, account_proxy, is_selected):
+        account_widget = AccountWidget(account_id, name, cookies, twitch_cookies, messages, account_proxy, self)
         list_widget_item = QListWidgetItem(self.account_list)
         list_widget_item.setSizeHint(account_widget.sizeHint())
         self.account_list.addItem(list_widget_item)
@@ -1659,7 +1839,7 @@ class DataFetcherThread(QThread):
                         self.load_config()
                         sub_account_id = self.current_sub_account
                         params = {'user_id': user_id, 'sub_account_id': sub_account_id}
-                        response = requests.get('http://188.225.86.91:5000/get_data', params=params)
+                        response = requests.get('http://77.232.131.189:5001/get_data', params=params)
                         if response.status_code == 200:
                             data = response.json()
                             message = data.get('message')
@@ -1783,6 +1963,9 @@ class ChatWriterThread(QThread):
             if not self.driver:
                 return
             
+            # self.driver.get('https://pr-cy.ru/browser-details/')
+            # time.sleep(1000)
+            
             print(f'Окно браузера запущено. [{self.account_name}]')
             site = f'https://kick.com/{self.streamer}'
             #site = f'https://kick.com/Suzuraya1'
@@ -1809,7 +1992,7 @@ class ChatWriterThread(QThread):
                     self.wg_active = False
                 else:
                     if self.random_messages_enabled:
-                        delay = random.randint(120, 240)
+                        delay = random.randint(60, 200)
                         for i in range(delay):
                             #print(f'{i}/{delay}')
                             if self.is_running and self.random_messages_enabled:
