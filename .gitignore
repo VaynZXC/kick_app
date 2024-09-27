@@ -5,3 +5,5 @@ collected_rewards.txt
 accounts_points.txt
 config.json
 credentials.json
+product_selection.json
+account_order.json

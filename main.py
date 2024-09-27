@@ -2001,14 +2001,17 @@ class AccountManagerWindow(QMainWindow):
 
         # Загрузка сохраненного порядка
         if os.path.exists('account_order.json'):
-            with open('account_order.json', 'r') as f:
-                saved_order = json.load(f)
-            # Создаем словарь для быстрого доступа к аккаунтам по ID
-            account_dict = {str(account['id']): account for account in accounts}
-            # Перестраиваем список аккаунтов в соответствии с сохраненным порядком
-            ordered_accounts = [account_dict[account_id] for account_id in saved_order if account_id in account_dict]
-            # Добавляем новые аккаунты, которых нет в сохраненном порядке
-            ordered_accounts += [account for account in accounts if str(account['id']) not in saved_order]
+            try:
+                with open('account_order.json', 'r') as f:
+                    saved_order = json.load(f)
+                # Создаем словарь для быстрого доступа к аккаунтам по ID
+                account_dict = {str(account['id']): account for account in accounts}
+                # Перестраиваем список аккаунтов в соответствии с сохраненным порядком
+                ordered_accounts = [account_dict[account_id] for account_id in saved_order if account_id in account_dict]
+                # Добавляем новые аккаунты, которых нет в сохраненном порядке
+                ordered_accounts += [account for account in accounts if str(account['id']) not in saved_order]
+            except Exception:
+                ordered_accounts = accounts
         else:
             ordered_accounts = accounts
 
